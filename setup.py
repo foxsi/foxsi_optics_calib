@@ -10,6 +10,7 @@ install_requires = [
     # List your project dependencies here.
     'matplotlib',
     'numpy',
+    'scipy',
     'astropy',
     'h5py'
 ]

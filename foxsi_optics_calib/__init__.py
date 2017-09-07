@@ -16,11 +16,11 @@ CCD_PIXEL_PITCH = 13.5 * u.micron
 HDF_CCD_FILE = '/Users/schriste/Documents/FOXSI-R/Optics PSF Calibration/foxsi2_ccd_corrected.hdf5'
 
 print("Loading file {0}".format(HDF_CCD_FILE))
-with h5py.File(HDF_CCD_FILE, 'r+') as hdf_ccd:
-    ccd_images = hdf_ccd['X2/ccd_images']
-    ccd_polar_angles = u.Quantity(hdf_ccd['meta/polar_angle'][...], hdf_ccd['meta/polar_angle'].attrs['units'])
-    ccd_offaxis_angles = u.Quantity(hdf_ccd['meta/offaxis_angle'][...], hdf_ccd['meta/offaxis_angle'].attrs['units'])
-    ccd_nimages = ccd_images.shape[0]
+hdf_ccd = h5py.File(HDF_CCD_FILE, 'r+')
+ccd_images = hdf_ccd['X2/ccd_images']
+ccd_polar_angles = u.Quantity(hdf_ccd['meta/polar_angle'][...], hdf_ccd['meta/polar_angle'].attrs['units'])
+ccd_offaxis_angles = u.Quantity(hdf_ccd['meta/offaxis_angle'][...], hdf_ccd['meta/offaxis_angle'].attrs['units'])
+ccd_nimages = ccd_images.shape[0]
 
 
 @u.quantity_input(pixel_pitch=u.mm)
