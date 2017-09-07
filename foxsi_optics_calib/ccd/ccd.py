@@ -1,18 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-
+Code to read and analyze data from the CCD camera
 """
 import h5py
 from astropy.wcs import WCS
 import astropy.units as u
 import numpy as np
 import matplotlib.pyplot as plt
-import foxsi_optics_calib
 from matplotlib.colors import LogNorm
 import scipy.optimize as opt
-
-from astropy.modeling.models import custom_model, Gaussian2D
 from astropy.modeling.fitting import LevMarLSQFitter
+from astropy.io import fits as pyfits
+from astropy.nddata import CCDData
+from copy import deepcopy
+
+import foxsi_optics_calib
+from foxsi_optics_calib.psf import psf2d, psf_x, psf_y, calculate_best_guess_params, PSF2DModel
+
+CCD_PLATE_SCALE = foxsi_optics_calib.plate_scale(foxsi_optics_calib.CCD_PIXEL_PITCH).value
 
 
 @u.quantity_input(offaxis_angle=u.deg, polar_angle=u.deg)
@@ -22,13 +27,14 @@ def find_ccd_image(offaxis_angle, polar_angle):
     """
     offax_condition = foxsi_optics_calib.ccd_offaxis_angles.value == offaxis_angle.value
     polar_condition = foxsi_optics_calib.ccd_polar_angles.value == polar_angle.value
-    index = np.where(offax_condition * polar_condition)[0][0]
-
+    index = np.where(offax_condition * polar_condition)
+    print(index)
+    index = index[0][0]
     if index is None:
         raise ValueError(
             "No index found for {offaxis_angle} and {polar_angle}.".format(
                 offaxis_angle=offaxis_angle, polar_angle=polar_angle))
-    print("Index found {index}".format(index=index))
+    #print("Index found {index}".format(index=index))
     img = foxsi_optics_calib.ccd_images[index, :, :]
     max_pixel = np.unravel_index(np.argmax(img), img.shape)
     # reduce the size of the array centered on the maximum
@@ -39,9 +45,28 @@ def find_ccd_image(offaxis_angle, polar_angle):
     return CCDImage(sub_img, offaxis_angle, polar_angle)
 
 
+class AndorCCDImage(CCDData):
+    """A class to handle fits files created by Andor CCD."""
+    def __init__(self, filename):
+        fits = pyfits.open(filename)
+
+        if len(fits[0].data.shape) == 3:
+            data = np.average(fits[0].data, axis=0)
+        else:
+            data = fits[0].data
+        w = WCS(naxis=2)
+        w.wcs.crpix = np.unravel_index(np.argmax(data), data.shape)
+        w.wcs.cdelt = foxsi_optics_calib.plate_scale(
+            foxsi_optics_calib.CCD_PIXEL_PITCH).value * np.ones(2)
+        w.wcs.crval = [0, 0]
+        w.wcs.ctype = ["TAN", "TAN"]
+        CCDData.__init__(self, data, wcs=w, unit='adu', header=deepcopy(fits[0].header))
+
+
 class CCDImage():
     """
-
+    A class for PSF CCD images. It assumes that the image should be centered on
+    the brightest pixel.
     """
     def __init__(self, im, offaxis_angle, polar_angle, shift=False):
         self.im = im
@@ -60,12 +85,25 @@ class CCDImage():
         self.yaw = yaw
         # offset is pitch then yaw
         self.offset = u.Quantity([pitch, yaw])
-        #if shift:
-        #    self.w.wcs.crval += [self.yaw.to('arcsec').value,
-        #                         self.pitch.to('arcsec').value]
+        if shift:
+            self.w.wcs.crval += [self.yaw.to('arcsec').value,
+                                 self.pitch.to('arcsec').value]
 
         x, y = np.meshgrid(*[np.arange(v) for v in self.im.shape]) * u.pixel
         self.xaxis, self.yaxis = self.w.wcs_pix2world(x, y, 1) * u.arcsec
+
+    def hpd(self):
+        max_pixel_range = 100
+        max_pixel = self.w.wcs.crpix.astype('int')
+        x, y = np.meshgrid(*[np.arange(v) for v in self.im.shape])
+        r = np.sqrt((x - max_pixel[0]) ** 2 + (y - max_pixel[1]) ** 2)
+        hpd_array = np.zeros_like(np.arange(max_pixel_range).astype('float'))
+        for i in np.arange(max_pixel_range):
+            hpd_array[i] = np.sum(self.im[r < i])
+        hpd_array /= hpd_array.max()
+        print(2 * np.interp(0.5, hpd_array,
+                            np.arange(max_pixel_range) * CCD_PLATE_SCALE))
+        return hpd_array
 
     def _get_xlim(self, x1, x2):
         world = self.w.wcs_world2pix([[x1, 0], [x2, 0]], 1)
@@ -140,21 +178,30 @@ class CCDImage():
 
 class CCDFitImage(CCDImage):
 
-    def __init__(self, ccd_image):
+    def __init__(self, ccd_image, shift=False):
         CCDImage.__init__(self, ccd_image.im, ccd_image.offaxis_angle,
-                          ccd_image.polar_angle)
+                          ccd_image.polar_angle, shift=shift)
         self._fit()
         self.im_fit = self.fit_func(self.xaxis.value, self.yaxis.value)
         self.fwhm = self.calculate_fwhm()
 
     def _fit(self):
         amplitude = self.im.max()
-        g_init = psf(amplitude1=amplitude * 1.0, x_stddev1=1, y_stddev1=1,
-                     amplitude2=amplitude * 0.5, x_stddev2=5, y_stddev2=5,
-                     amplitude3=amplitude * 0.5, x_stddev3=10, y_stddev3=10,
-                     x_mean=0, y_mean=0, theta=0.0)
+        guess_params = calculate_best_guess_params(self.offaxis_angle, self.polar_angle)
+        print(guess_params)
+        g_init = PSF2DModel(amplitude1=amplitude, x_stddev1=3, y_stddev1=3,
+                       amplitude2=amplitude/10., x_stddev2=5, y_stddev2=5,
+                       amplitude3=amplitude/20., x_stddev3=10, y_stddev3=10,
+                       x_mean=0, y_mean=0, theta=self.polar_angle.to('deg').value, offset=0.0)
+        print("angle={0}".format(self.polar_angle.to('deg').value))
         fit = LevMarLSQFitter()
-        fitted_model = fit(g_init, self.xaxis, self.yaxis, self.im)
+        fitted_model = fit(g_init, self.xaxis.to('arcsec').value,
+                           self.yaxis.to('arcsec').value, self.im, maxiter=200)
+        print(fit.fit_info['message'])
+        print("amplitude: {0} {1} {2}".format(fitted_model.amplitude1.value,
+                                              fitted_model.amplitude2.value,
+                                              fitted_model.amplitude3.value))
+        print("center: {0}, {1}".format(fitted_model.x_mean.value, fitted_model.y_mean.value))
         self.fit_func = fitted_model
         self.fwhm = self.calculate_fwhm()
 
@@ -166,8 +213,16 @@ class CCDFitImage(CCDImage):
         f.offset -= half_maximum
         f_x = psf_x(f.y_mean, f)
         f_y = psf_y(f.x_mean, f)
-        fwhm_x = 2 * opt.brentq(f_x, f.x_mean.value, f.x_mean.value + 5)
-        fwhm_y = 2 * opt.brentq(f_y, f.y_mean.value, f.y_mean.value + 5)
+        try:
+            fwhm_x = 2 * opt.brentq(f_x, f.x_mean.value, f.x_mean.value + 20)
+        except ValueError:
+            fwhm_x = np.nan
+            pass
+        try:
+            fwhm_y = 2 * opt.brentq(f_y, f.y_mean.value, f.y_mean.value + 20)
+        except ValueError:
+            fwhm_y = np.nan
+            pass
         f.offset += half_maximum
         return np.array([fwhm_x, fwhm_y])
 
@@ -189,40 +244,10 @@ class CCDFitImage(CCDImage):
             f = psf_x(self.fit_func.y_mean, self.fit_func)
         if direction.count('y'):
             f = psf_y(self.fit_func.x_mean, self.fit_func)
-        ax.plot(x, [f(this_x) / self.im_fit.max() for this_x in x], color='blue')
-
-@custom_model
-def psf(x, y,
-        amplitude1=1.0, x_stddev1=1.0, y_stddev1=1,
-        amplitude2=0.5, x_stddev2=5.0, y_stddev2=5,
-        amplitude3=0.1, x_stddev3=10., y_stddev3=10,
-        x_mean=0., y_mean=0,
-        theta=0.0, offset=0):
-    """The model of the FOXSI PSF"""
-    if amplitude1 < 0:
-        amplitude1 = 1e12
-    if amplitude2 < 0:
-        amplitude2 = 1e12
-    if amplitude3 < 0:
-        amplitude3 = 1e12
-
-    g1 = Gaussian2D(amplitude=amplitude1, x_mean=x_mean, y_mean=y_mean, x_stddev=x_stddev1, y_stddev=y_stddev1, theta=theta)
-    g2 = Gaussian2D(amplitude=amplitude2, x_mean=x_mean, y_mean=y_mean, x_stddev=x_stddev2, y_stddev=y_stddev2, theta=theta)
-    g3 = Gaussian2D(amplitude=amplitude3, x_mean=x_mean, y_mean=y_mean, x_stddev=x_stddev3, y_stddev=y_stddev3, theta=theta)
-    y1 = g1.evaluate(x, y, amplitude=amplitude1, x_mean=x_mean, y_mean=y_mean, x_stddev=x_stddev1, y_stddev=y_stddev1, theta=theta)
-    y2 = g2.evaluate(x, y, amplitude=amplitude2, x_mean=x_mean, y_mean=y_mean, x_stddev=x_stddev1, y_stddev=y_stddev1, theta=theta)
-    y3 = g3.evaluate(x, y, amplitude=amplitude3, x_mean=x_mean, y_mean=y_mean, x_stddev=x_stddev3, y_stddev=y_stddev3, theta=theta)
-    return y1 + y2 + y3 + offset
-
-
-def psf_x(y_value, psf_function):
-    """The PSF as a function of x for a given y."""
-    return lambda x: psf_function(x, y_value)
-
-
-def psf_y(x_value, psf_function):
-    """The PSF as a function of x for a given y."""
-    return lambda y: psf_function(x_value, y)
+        y = np.array([f(this_x) for this_x in x])
+        # normalize
+        y = y / y.max()
+        ax.plot(x, y, color='blue')
 
 
 def load_hdf(filename):
