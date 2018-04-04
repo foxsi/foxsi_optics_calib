@@ -7,6 +7,7 @@ from astropy.modeling import Fittable2DModel, Parameter
 import scipy.optimize as opt
 import numpy as np
 import astropy.units as u
+import foxsi_optics_calib
 
 
 class PSF2DModel(Fittable2DModel):
@@ -134,7 +135,8 @@ def calculate_fwhm1d(psf1d_func):
 
 def calculate_best_guess_params(pitch, yaw):
     """pitch and yaw in arcmin."""
-    params_file = '/Users/schriste/Documents/FOXSI-R/Optics PSF Calibration/params.txt'
+    path = foxsi_optics_calib.__path__[0]
+    params_file = path+'/params.txt'
     params = np.loadtxt(params_file)
     offaxis_angle = np.sqrt(pitch ** 2 + yaw ** 2)
     polar_angle = np.arctan2(pitch, yaw) + np.pi / 2. * u.rad
