@@ -20,6 +20,8 @@ CCD_PIXEL_PITCH = 13.5 * u.micron
 #ccd_polar_angles = u.Quantity(hdf_ccd['meta/polar_angle'][...], hdf_ccd['meta/polar_angle'].attrs['units'])
 #ccd_offaxis_angles = u.Quantity(hdf_ccd['meta/offaxis_angle'][...], hdf_ccd['meta/offaxis_angle'].attrs['units'])
 #ccd_nimages = ccd_images.shape[0]
+ccd_polar_angles = u.Quantity(0, 'arcsec')
+ccd_offaxis_angles = u.Quantity(0, 'arcsec')
 
 @u.quantity_input(distance=u.m)
 def plate_scale(distance):

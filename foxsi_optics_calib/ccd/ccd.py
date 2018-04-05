@@ -18,7 +18,7 @@ import os.path
 import foxsi_optics_calib
 from foxsi_optics_calib.psf import psf2d, psf_x, psf_y, calculate_best_guess_params, PSF2DModel
 
-CCD_PLATE_SCALE = foxsi_optics_calib.plate_scale(foxsi_optics_calib.CCD_PIXEL_PITCH).value
+CCD_PLATE_SCALE = foxsi_optics_calib.plate_scale(foxsi_optics_calib.FOCAL_LENGTH).value
 
 
 class AndorCCDImage(CCDData):
@@ -54,16 +54,17 @@ class AndorCCDImage(CCDData):
     >>> ccd = AndorCCDImage('filename.fits', 2 * u.m)
     """
 
-    def __init__(self, filename, distance):
+    def __init__(self, filename, darkfile, distance):
 
         fits = pyfits.open(filename)
+        darks = pyfits.open(darkfile)
         # compress all images into one image by average all the pixels
         if len(fits[0].data.shape) == 3:
             print("Found {0} exposures. Averaging...".format(
                 fits[0].data.shape[0]))
-            data = np.average(fits[0].data, axis=0)
+            data = np.average(fits[0].data, axis=0) - np.average(darks[0].data, axis=0)
         else:
-            data = fits[0].data
+            data = fits[0].data - darks[0].data
 
         # create the wcs information
         w = WCS(naxis=2)
@@ -190,8 +191,8 @@ class AndorCCDPsfImage(AndorCCDImage):
         >>> import astropy.units as u
         >>> ccd = AndorCCDPsfImage('filename.fits', 2 * u.m)
     """
-    def __init__(self, filename, distance):
-        AndorCCDImage.__init__(self, filename, distance)
+    def __init__(self, filename, darkfile, distance):
+        AndorCCDImage.__init__(self, filename, darkfile, distance)
         maxpix = np.unravel_index(np.argmax(self.data), self.shape)
         self.wcs.wcs.crpix = [maxpix[1], maxpix[0]]
         self.set_xlim(-40, 40)
@@ -200,16 +201,17 @@ class AndorCCDPsfImage(AndorCCDImage):
     def hpd(self):
         """Provide the half power diameter array."""
         max_pixel_range = 100
-        max_pixel = self.wcs.crpix.astype('int')
-        x, y = np.meshgrid(*[np.arange(v) for v in self.im.shape])
+        max_pixel = self.wcs.wcs.crpix.astype('int')
+        x, y = np.meshgrid(*[np.arange(v) for v in self.data.shape])
         r = np.sqrt((x - max_pixel[0]) ** 2 + (y - max_pixel[1]) ** 2)
         hpd_array = np.zeros_like(np.arange(max_pixel_range).astype('float'))
         for i in np.arange(max_pixel_range):
-            hpd_array[i] = np.sum(self.im[r < i])
+            hpd_array[i] = np.sum(self.data[r < i])
         hpd_array /= hpd_array.max()
-        print(2 * np.interp(0.5, hpd_array,
-                            np.arange(max_pixel_range) * CCD_PLATE_SCALE))
-        return hpd_array
+        binning = 2 # Binning used for the ANDOR camera when taking data
+        diameter = 2 * binning * np.arange(max_pixel_range) * CCD_PLATE_SCALE
+        hpd_value = np.interp(0.5, hpd_array, diameter)
+        return hpd_value, hpd_array, diameter
 
     def plot_cut(self, xlim=[-40, 40], ax=None, title=None, direction='x'):
         max_pixel = self.wcs.crpix
@@ -236,8 +238,8 @@ class AndorCCDPsfImage(AndorCCDImage):
 
 class AndorCCDPsfFitImage(AndorCCDPsfImage):
 
-    def __init__(self, filename, distance):
-        AndorCCDPsfImage.__init__(self, filename, distance)
+    def __init__(self, filename, darkfile, distance):
+        AndorCCDPsfImage.__init__(self, filename, darkfile, distance)
 
         self._fit()
         self.im_fit = self.fit_func(self.xaxis.value, self.yaxis.value)
