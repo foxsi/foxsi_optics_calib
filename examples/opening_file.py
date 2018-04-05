@@ -4,17 +4,18 @@ from foxsi_optics_calib.ccd.ccd import AndorCCDImage, AndorCCDPsfImage, AndorCCD
 
 focal_length = 2 * u.m
 
-f = '/Users/schriste/Desktop/2017-Oct/X4/CCD/rawdata/PSF/FOXSI3_X4_25mmz_CCD_10kV_0p02mA_+1arcminX_+1arcminY.fits'
+f = '/Users/Kamilobu/Desktop/X10Test/FOXSI3_X10-Test_CCD_T2Sx6_10kV_0p02mA_0mmZ.fits'
+d = '/Users/Kamilobu/Desktop/X10Test/Dark1_FOXSI3_X10-Test_CCD_T2Sx6_10kV_0p02mA_+15mmZ.fits'
 
 # for just a general image with no assumptions
-img = AndorCCDImage(f, focal_length)
+img = AndorCCDImage(f, d, focal_length)
 
 print(img)
 
-psf_img = AndorCCDPsfImage(f, focal_length)
+psf_img = AndorCCDPsfImage(f, d, focal_length)
 
 print(psf_img)
 
-psffit_img = AndorCCDPsfFitImage(f, focal_length)
+psffit_img = AndorCCDPsfFitImage(f, d, focal_length)
 
 print(psffit_img)
